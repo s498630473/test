@@ -1,0 +1,1031 @@
+﻿<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>消防勤務快速查詢系統</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- FontAwesome 圖示 -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <!-- SheetJS Excel 解析引擎 -->
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+  
+  <!-- Firebase SDK Compat 版本 (最適合單一 HTML 網頁載入) -->
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
+
+  <style>
+    /* 客製化滾動條 */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: rgba(15, 23, 42, 0.5);
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(148, 163, 184, 0.3);
+      border-radius: 999px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(148, 163, 184, 0.5);
+    }
+  </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen py-8 px-4 font-sans select-none">
+
+  <!-- 吐司通知 (Toast) -->
+  <div id="toast" class="fixed top-4 left-1/2 -translate-x-1/2 z-50 bg-slate-800 border border-slate-700 px-4 py-2.5 rounded-xl shadow-2xl flex items-center gap-2 text-xs font-semibold text-emerald-400 hidden transition-all duration-300">
+    <i class="fa-solid fa-circle-check animate-pulse"></i>
+    <span id="toast-text">成功！</span>
+  </div>
+
+  <!-- Firebase 雲端金鑰設定 Modal -->
+  <div id="config-modal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm hidden">
+    <div class="bg-slate-800 border border-slate-700 p-6 rounded-2xl max-w-md w-full space-y-4 shadow-2xl">
+      <div class="flex justify-between items-center">
+        <h3 class="text-base font-bold text-white flex items-center gap-1.5">
+          <i class="fa-solid fa-gear text-red-500"></i>
+          Firebase 雲端同步設定
+        </h3>
+        <button onclick="closeConfigModal()" class="text-slate-400 hover:text-white">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+      <div class="space-y-3 text-xs leading-relaxed text-slate-300">
+        <p>貼入從 Firebase 控制台複製的 Web App 配置 JSON。此設定將安全儲存於您的瀏覽器中，不需重新上傳程式碼：</p>
+        <textarea id="config-json-input" placeholder='{\n  "apiKey": "AIzaSy...",\n  "authDomain": "...",\n  "projectId": "...",\n  "storageBucket": "...",\n  "messagingSenderId": "...",\n  "appId": "..."\n}' class="w-full h-44 p-3 bg-slate-900 border border-slate-700 rounded-xl font-mono text-[11px] text-emerald-400 focus:outline-none focus:border-red-500"></textarea>
+      </div>
+      <div class="flex gap-3 pt-2">
+        <button onclick="clearSavedConfig()" class="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-xs font-bold rounded-xl transition-all text-red-400">
+          清除設定
+        </button>
+        <div class="flex-grow"></div>
+        <button onclick="closeConfigModal()" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-xs font-bold rounded-xl transition-all">
+          取消
+        </button>
+        <button onclick="saveConfigFromModal()" class="px-4 py-2 bg-red-600 hover:bg-red-500 text-xs font-bold text-white rounded-xl transition-all">
+          儲存並連線
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 刪除確認 Modal -->
+  <div id="delete-modal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm hidden">
+    <div class="bg-slate-800 border border-slate-700 p-6 rounded-2xl max-w-sm w-full space-y-4 shadow-2xl">
+      <div class="text-center space-y-2">
+        <div class="inline-flex p-3 bg-red-950/50 text-red-500 rounded-full">
+          <i class="fa-solid fa-trash-can text-2xl animate-pulse"></i>
+        </div>
+        <h3 class="text-lg font-bold text-white">確定要刪除班表嗎？</h3>
+        <p class="text-xs text-slate-400 leading-relaxed">
+          您即將刪除 <span id="delete-target-label" class="text-red-400 font-bold"></span> 的班表資料。<br>
+          這將同步移出雲端共享庫，其他隊友也將無法查詢此班表。
+        </p>
+      </div>
+      <div class="flex gap-3 pt-2">
+        <button onclick="closeDeleteModal()" class="flex-1 py-2 bg-slate-700 hover:bg-slate-600 text-xs font-bold rounded-xl transition-all">
+          取消
+        </button>
+        <button onclick="executeDelete()" class="flex-1 py-2 bg-red-600 hover:bg-red-500 text-xs font-bold text-white rounded-xl transition-all">
+          確定刪除
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 主容器 -->
+  <div class="max-w-md mx-auto space-y-6">
+
+    <!-- 雲端同步狀態列 -->
+    <div class="flex justify-between items-center bg-slate-800/50 border border-slate-700/60 rounded-xl px-4 py-2.5 text-xs">
+      <div class="flex items-center gap-1.5">
+        <span id="cloud-status-dot" class="w-2.5 h-2.5 rounded-full bg-amber-500 animate-pulse"></span>
+        <span id="cloud-status-text" class="text-amber-500 font-bold">初始化中...</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <!-- ⚙️ 設定按鈕 -->
+        <button onclick="openConfigModal()" class="p-1.5 text-slate-400 hover:text-white hover:bg-slate-700 rounded-lg transition-all" title="Firebase 金鑰設定">
+          <i class="fa-solid fa-gear text-sm"></i>
+        </button>
+        <button onclick="syncFromCloud()" class="flex items-center gap-1 bg-slate-700 hover:bg-slate-600 text-slate-200 px-2.5 py-1 rounded-lg border border-slate-600 transition-all font-semibold active:scale-95">
+          <i id="sync-icon" class="fa-solid fa-arrows-rotate"></i>
+          同步更新
+        </button>
+      </div>
+    </div>
+
+    <!-- 頂部防救災標頭 -->
+    <div class="text-center space-y-2">
+      <div class="inline-flex items-center justify-center p-3 bg-red-600 rounded-2xl mb-2 shadow-lg shadow-red-900/30">
+        <i class="fa-solid fa-fire-extinguisher text-white text-3xl"></i>
+      </div>
+      <h1 class="text-2xl font-bold tracking-wider text-white">智慧勤務快速查詢</h1>
+      <p class="text-xs text-slate-400 flex items-center justify-center gap-1">
+        <i class="fa-regular fa-calendar-days text-red-500"></i>
+        自動比對今日與明日 Excel 班表
+      </p>
+    </div>
+
+    <!-- 已載入日期清單 -->
+    <div id="date-list-card" class="bg-slate-800/60 border border-slate-700/60 rounded-2xl p-4 space-y-3 shadow-xl hidden">
+      <div class="text-xs text-slate-300 font-bold flex items-center justify-between">
+        <span>🗂️ 目前已載入的班表清單：</span>
+        <span class="text-[10px] text-slate-500">點擊切換 ✕ 可刪除</span>
+      </div>
+      <div id="date-list-container" class="flex flex-col gap-2 max-h-[140px] overflow-y-auto pr-1">
+        <!-- JS 動態渲染 -->
+      </div>
+    </div>
+
+    <!-- 拖放/上傳區 -->
+    <div id="drop-zone" class="relative border-2 border-dashed border-slate-700 bg-slate-800/50 hover:border-slate-600 rounded-2xl p-6 text-center transition-all duration-300">
+      <input type="file" id="excel-files" multiple accept=".xlsx, .xls" class="hidden">
+      <input type="file" id="excel-folder" webkitdirectory class="hidden">
+      
+      <div class="space-y-3">
+        <div class="flex justify-center gap-4">
+          <button onclick="document.getElementById('excel-files').click()" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 rounded-lg flex items-center gap-1.5 transition-colors border border-slate-700">
+            <i class="fa-solid fa-cloud-arrow-up text-red-400"></i>
+            上傳新班表
+          </button>
+          <button onclick="document.getElementById('excel-folder').click()" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 rounded-lg flex items-center gap-1.5 transition-colors border border-slate-700">
+            <i class="fa-solid fa-folder-open text-amber-400"></i>
+            上傳資料夾
+          </button>
+        </div>
+        <p class="text-xs text-slate-400">
+          或者：將含有每日班表的「資料夾」或「檔案」直接拖曳進來
+        </p>
+        <p id="file-count-indicator" class="text-xs text-emerald-400 font-bold hidden"></p>
+
+        <!-- 重新解析暫存檔案按鈕 -->
+        <div id="reparse-container" class="pt-2 hidden">
+          <button onclick="reparseLastFile()" class="mx-auto flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-md transition-all transform hover:scale-[1.02]">
+            <i class="fa-solid fa-arrows-spin"></i>
+            🔄 重新讀取/更新此檔案
+          </button>
+        </div>
+      </div>
+      <p id="parse-error" class="mt-3 text-xs text-red-400 bg-red-950/30 p-2 rounded-lg border border-red-900/50 hidden"></p>
+    </div>
+
+    <!-- 智慧日期快速切換 -->
+    <div class="bg-slate-800/40 p-1.5 rounded-xl flex gap-1 border border-slate-800">
+      <button id="btn-today" onclick="switchDate('today')" class="flex-1 py-2 text-xs font-bold rounded-lg text-slate-600 cursor-not-allowed">
+        今日 --/-- <span class="text-[9px] px-1 bg-slate-800 rounded ml-1">待傳</span>
+      </button>
+      <button id="btn-tomorrow" onclick="switchDate('tomorrow')" class="flex-1 py-2 text-xs font-bold rounded-lg text-slate-600 cursor-not-allowed">
+        明日 --/-- <span class="text-[9px] px-1 bg-slate-800 rounded ml-1">待傳</span>
+      </button>
+      <div class="relative flex-1">
+        <select id="date-select" onchange="switchDate(this.value)" class="w-full h-full py-2 px-1 text-center text-xs font-bold bg-slate-800 text-slate-300 rounded-lg border border-transparent focus:outline-none focus:border-red-500 cursor-pointer">
+          <option value="" disabled selected>快速切換日期...</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- 搜尋番號輸入框 -->
+    <div class="bg-slate-800/80 backdrop-blur-md p-5 rounded-2xl shadow-xl border border-slate-700/50">
+      <label class="block text-sm font-medium text-slate-300 mb-2 flex items-center justify-between">
+        <span>請輸入您的人員番號</span>
+        <span class="text-xs text-slate-500 font-normal">番號預設已清空</span>
+      </label>
+      <div class="relative">
+        <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-500">
+          <i class="fa-solid fa-magnifying-glass"></i>
+        </div>
+        <input
+          type="text"
+          id="personnel-input"
+          oninput="handleNumberInput(this.value)"
+          placeholder="輸入番號（例如：19）"
+          class="block w-full pl-10 pr-3 py-3 border border-slate-700 rounded-xl bg-slate-900/80 placeholder-slate-600 text-white font-bold text-lg focus:outline-none focus:ring-2 focus:ring-red-500 transition-colors"
+        >
+      </div>
+    </div>
+
+    <!-- 勤務展示區 -->
+    <div class="space-y-4">
+      <div class="flex items-center justify-between pl-1">
+        <h2 id="schedule-title" class="text-base font-bold text-slate-200 flex items-center gap-2">
+          <i class="fa-regular fa-clock text-red-500"></i>
+          今日班表 <span class="text-xs font-normal text-slate-500">(暫無資料)</span>
+        </h2>
+        <div class="text-xs text-slate-500 flex items-center gap-1">
+          <i class="fa-regular fa-circle-question"></i>
+          自動合併時段
+        </div>
+      </div>
+
+      <!-- 休假大卡片區 -->
+      <div id="holiday-card" class="bg-gradient-to-br from-blue-600 to-indigo-700 p-6 rounded-3xl shadow-2xl space-y-4 text-center border border-blue-500/30 hidden">
+        <div class="inline-flex p-4 bg-white/10 rounded-full text-white backdrop-blur-sm animate-pulse">
+          <i class="fa-solid fa-umbrella-beach text-3xl"></i>
+        </div>
+        <div class="space-y-1">
+          <h3 id="holiday-type-text" class="text-2xl font-black text-white tracking-widest"></h3>
+          <p id="holiday-member-text" class="text-sm font-bold text-blue-100/90"></p>
+        </div>
+        <p class="text-xs text-blue-200/90 leading-relaxed max-w-[280px] mx-auto">
+          今天安心放假、好好放鬆充電！<br>祝您假期愉快，出入平安！
+        </p>
+        <div class="pt-2">
+          <button onclick="forceOpenSchedule()" class="mx-auto flex items-center gap-1.5 px-3.5 py-1.5 bg-white/10 hover:bg-white/20 active:scale-95 text-[11px] font-bold text-white rounded-xl transition-all">
+            <i class="fa-solid fa-chevron-down"></i>
+            展開查看當天勤務 (核對用)
+          </button>
+        </div>
+      </div>
+
+      <!-- 收合假別按鈕 -->
+      <div id="collapse-holiday-btn-container" class="flex justify-center hidden">
+        <button onclick="forceCloseSchedule()" class="flex items-center gap-1 px-3 py-1 bg-slate-800 hover:bg-slate-700 text-[10px] text-amber-400 font-bold rounded-lg border border-slate-700 transition-all">
+          <i class="fa-solid fa-chevron-up"></i>
+          收合休假大卡片
+        </button>
+      </div>
+
+      <!-- 實際時間軸列表 -->
+      <div id="schedule-timeline" class="relative border-l-2 border-slate-800 ml-4 pl-6 space-y-5 py-2">
+        <!-- JS 動態渲染 -->
+      </div>
+    </div>
+
+    <!-- 頁尾指南 -->
+    <div class="bg-slate-800/30 p-4 rounded-xl border border-slate-800 text-xs text-slate-500 space-y-1.5">
+      <p class="font-semibold text-slate-400">🔒 消防專屬智慧型網頁版說明：</p>
+      <ul class="list-disc pl-4 space-y-1 leading-relaxed text-slate-500">
+        <li><strong>智慧假別卡片 🏝️</strong>：凡當天班表含有「輪休、請休、補休」且有您的號碼，網頁會自動跳出放假大卡片！</li>
+        <li><strong>消防 24H 跨日排序 (0800~0800)</strong>：跨午夜凌晨勤務已完美自動排至深夜段落之後，不發生錯亂。</li>
+        <li><strong>網頁自攜資料庫</strong>：若您將此檔案部署在 GitHub Pages 或是 Vercel，只要排班學長丟一次，所有人直接打開連結即刻能查！</li>
+      </ul>
+    </div>
+
+  </div>
+
+  <!-- ==================== JavaScript 核心邏輯 ==================== -->
+  <script>
+    // 💡 取得本機快取的 Firebase Config，避免學長需要直接修改 HTML 原始碼
+    let savedConfig = null;
+    try {
+      savedConfig = JSON.parse(localStorage.getItem('fire_schedule_config'));
+    } catch(e) {}
+
+    const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : (savedConfig || {
+      apiKey: "",             // [選填] 貼上您的 API 金鑰 (手動硬編碼適用)
+      authDomain: "",         // [選填] 驗證網域
+      projectId: "",          // [選填] 專案專屬唯一識別碼 ID
+      storageBucket: "",
+      messagingSenderId: "",
+      appId: ""
+    });
+    
+    const targetAppId = typeof __app_id !== 'undefined' ? __app_id : 'tyfd-datzhu';
+
+    // 本地預設示範資料庫
+    const demoSchedules = {
+      "0609": {
+        fileName: "1150609大竹分隊(示範).xlsx",
+        data: [
+          { time: "08:00~08:30", type: "all", duty: "勤前教育" },
+          { time: "08:00~09:00", "值班": "23", "緊急救護": "21,19", "責任區訪視": "24", "備勤": "25,22,5,1", "休息": "18,20", "檢核欄": "16" },
+          { time: "09:00~10:00", "值班": "23", "緊急救護": "21,19", "責任區訪視": "24", "備勤": "25,22,5,1", "休息": "18,20", "檢核欄": "16" },
+          { time: "10:00~11:00", "值班": "20", "緊急救護": "23,25", "責任區訪視": "", "備勤": "24,19,21,22,5,1", "休息": "18", "檢核欄": "16" },
+          { time: "11:00~12:00", "值班": "20", "緊急救護": "23,25", "責任區訪視": "", "備勤": "24,19,21,22,5,1", "休息": "18", "檢核欄": "16" },
+          { time: "12:00~13:00", "值班": "18", "緊急救護": "20,24", "責任區訪視": "", "備勤": "21,23,19,25,5,1", "休息": "22", "檢核欄": "16" },
+          { time: "13:00~14:00", "值班": "18", "緊急救護": "20,24", "責任區訪視": "", "備勤": "21,23,19,25,5,1", "休息": "22", "檢核欄": "16" },
+          { time: "14:00~15:00", "值班": "22", "緊急救護": "18,21", "責任區訪視": "", "備勤": "19,20,23,24,5,1", "休息": "25", "檢核欄": "16" },
+          { time: "15:00~16:00", "值班": "22", "緊急救護": "18,21", "責任區訪視": "", "備勤": "19,20,23,24,5,1", "休息": "25", "檢核欄": "16" },
+          { time: "16:00~17:00", "值班": "25", "緊急救護": "22,23", "責任區訪視": "", "備勤": "20,19,18,21,5", "休息": "24,1", "檢核欄": "16" },
+          { time: "17:00~18:00", "值班": "25", "緊急救護": "22,23", "責任區訪視": "", "備勤": "20,19,18,21,5", "休息": "24,1", "檢核欄": "16" },
+          { time: "18:00~19:00", "值班": "24", "緊急救護": "18,19", "責任區訪視": "", "備勤": "25,22,20,23,1", "休息": "5,21", "檢核欄": "16" },
+          { time: "19:00~20:00", "值班": "24", "緊急救護": "18,19", "責任區訪視": "", "備勤": "25,22,20,23,1", "休息": "5,21", "檢核欄": "16" },
+          { time: "20:00~21:00", "值班": "5", "緊急救護": "24,20", "責任區訪視": "", "備勤": "18,21,25,22,19,1", "休息": "23", "檢核欄": "16" },
+          { time: "21:00~22:00", "值班": "5", "緊急救護": "24,20", "責任區訪視": "", "備勤": "18,21,25,22,19,1", "休息": "23", "檢核欄": "16" },
+          { time: "22:00~23:00", "值班": "19", "緊急救護": "22,25", "責任區訪視": "", "備勤": "21,24,20,18,23,5,1", "休息": "", "檢核欄": "16" },
+          { time: "23:00~24:00", "值班": "19", "緊急救護": "22,25", "責任區訪視": "", "備勤": "21,24,20,18,23,5,1", "休息": "", "檢核欄": "16" },
+          { time: "00:00~01:00", "值班": "19", "緊急救護": "22,25", "責任區訪視": "", "備勤": "23,24,18,20,21,5,1", "休息": "", "檢核欄": "16" },
+          { time: "01:00~02:00", "值班": "19", "緊急救護": "22,25", "責任區訪視": "", "備勤": "23,24,18,20,21,5,1", "休息": "", "檢核欄": "16" },
+          { time: "02:00~03:00", "值班": "19", "緊急救護": "22,25", "責任區訪視": "", "備勤": "20,18,23,24,21,5,1", "休息": "", "檢核欄": "16" },
+          { time: "03:00~04:00", "值班": "19", "緊急救護": "22,25", "責任區訪視": "", "備勤": "20,18,23,24,21,5,1", "休息": "", "檢核欄": "16" },
+          { time: "04:00~05:00", "值班": "19", "緊急救護": "22,25", "責任區訪視": "", "備勤": "24,18,20,23,21,5,1", "休息": "", "檢核欄": "16" },
+          { time: "05:00~06:00", "值班": "19", "緊急救護": "22,25", "責任區訪視": "", "備勤": "24,18,20,23,21,5,1", "休息": "", "檢核欄": "16" }
+        ]
+      },
+      "0610": {
+        fileName: "1150610大竹分隊(示範).xlsx",
+        data: [
+          { time: "08:00~08:30", type: "all", duty: "勤前教育" },
+          { time: "全天假別", "輪休": "19,25", "請休": "21", "補休": "5" },
+          { time: "08:00~09:00", "值班": "23", "緊急救護": "24", "責任區訪視": "", "備勤": "18,22,1,20", "休息": "", "檢核欄": "16" },
+          { time: "09:00~10:00", "值班": "23", "緊急救護": "24", "責任區訪視": "", "備勤": "18,22,1,20", "休息": "", "檢核欄": "16" }
+        ]
+      }
+    };
+
+    // 系統狀態
+    let schedulesMap = { ...demoSchedules };
+    let personnelNumber = "";
+    let selectedDate = "0609";
+    let deletedDates = [];
+    let lastUploadedFile = null;
+    let forceShowSchedule = false;
+
+    // 取得「今天」與「明天」的 MMDD 4 碼字串
+    const today = new Date();
+    const tomorrow = new Date();
+    tomorrow.setDate(today.getDate() + 1);
+
+    const toMonthDayStr = (d) => {
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      return `${mm}${dd}`;
+    };
+
+    const todayStr = toMonthDayStr(today);
+    const tomorrowStr = toMonthDayStr(tomorrow);
+
+    // 勤務配色定義
+    const dutyStyles = {
+      "值班": { bg: "bg-amber-950/40", text: "text-amber-400", border: "border-amber-500", labelBg: "bg-amber-500 text-slate-900", icon: "fa-solid fa-desktop" },
+      "緊急救護": { bg: "bg-red-950/40", text: "text-red-400", border: "border-red-500", labelBg: "bg-red-600 text-white", icon: "fa-solid fa-truck-medical" },
+      "備勤": { bg: "bg-emerald-950/40", text: "text-emerald-400", border: "border-emerald-500", labelBg: "bg-emerald-600 text-white", icon: "fa-solid fa-mug-hot" },
+      "休息": { bg: "bg-blue-950/40", text: "text-blue-400", border: "border-blue-500", labelBg: "bg-blue-600 text-white", icon: "fa-solid fa-heart" },
+      "責任區訪視": { bg: "bg-violet-950/40", text: "text-violet-400", border: "border-violet-500", labelBg: "bg-violet-600 text-white", icon: "fa-solid fa-map-location-dot" },
+      "檢核欄": { bg: "bg-teal-950/40", text: "text-teal-400", border: "border-teal-500", labelBg: "bg-teal-600 text-white", icon: "fa-solid fa-square-check" },
+      "未排班": { bg: "bg-slate-800/40", text: "text-slate-500", border: "border-slate-700", labelBg: "bg-slate-700 text-slate-300", icon: "fa-regular fa-clock" }
+    };
+
+    const getDutyStyle = (dutyName) => {
+      if (!dutyName) return dutyStyles["未排班"];
+      for (const key of Object.keys(dutyStyles)) {
+        if (dutyName.includes(key)) return dutyStyles[key];
+      }
+      return dutyStyles["未排班"];
+    };
+
+    // 消防排班時間權重（08:00起排至隔日08:00）
+    const getTimeWeight = (timeStr) => {
+      if (!timeStr) return 9999;
+      const match = timeStr.match(/(\d+)(?::(\d+))?/);
+      if (!match) return 9999;
+      let hour = parseInt(match[1], 10);
+      const minute = match[2] ? parseInt(match[2], 10) : 0;
+      if (hour < 8) hour += 24; // 跨日凌晨時段排在後面
+      return hour * 60 + minute;
+    };
+
+    // ==================== Firebase 雲端模組 ====================
+    let dbInstance = null;
+    let authInstance = null;
+    let unsubscribeSchedules = null;
+
+    async function initFirebase() {
+      const statusDot = document.getElementById("cloud-status-dot");
+      const statusText = document.getElementById("cloud-status-text");
+
+      if (!firebaseConfig.apiKey) {
+        statusDot.className = "w-2.5 h-2.5 rounded-full bg-amber-500 animate-pulse";
+        statusText.innerText = "單機演示模式 (點齒輪設定雲端)";
+        statusText.className = "text-amber-500 font-bold";
+        renderApp();
+        return;
+      }
+
+      try {
+        firebase.initializeApp(firebaseConfig);
+        authInstance = firebase.auth();
+        dbInstance = firebase.firestore();
+
+        // 💡 遵循 RULE 3: 監聽驗證狀態，確認有登入後才進行 Firestore 讀取與 snapshot 監聽
+        authInstance.onAuthStateChanged((user) => {
+          if (user) {
+            statusDot.className = "w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse";
+            statusText.innerText = "雲端共享同步中";
+            statusText.className = "text-emerald-400 font-bold";
+            listenCloudSchedules();
+          } else {
+            statusDot.className = "w-2.5 h-2.5 rounded-full bg-amber-500 animate-pulse";
+            statusText.innerText = "未登入 / 離線模式";
+            statusText.className = "text-amber-500 font-bold";
+          }
+        });
+
+        // 💡 遵循 Custom Token Priority: 優先使用預配 Token 進行自訂授權登入，無 Token 則降級採用匿名驗證登入
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        if (initialAuthToken) {
+          await authInstance.signInWithCustomToken(initialAuthToken);
+        } else {
+          await authInstance.signInAnonymously();
+        }
+
+      } catch (e) {
+        console.error("Firebase Auth 初始化失敗，執行備用登入策略:", e);
+        try {
+          if (authInstance) {
+            await authInstance.signInAnonymously();
+          }
+        } catch (anonErr) {
+          console.error("備用匿名驗證亦失敗:", anonErr);
+          statusDot.className = "w-2.5 h-2.5 rounded-full bg-red-500";
+          statusText.innerText = "授權登入失敗";
+          statusText.className = "text-red-400 font-bold";
+          renderApp();
+        }
+      }
+    }
+
+    function listenCloudSchedules() {
+      if (!dbInstance || !authInstance.currentUser) return;
+      
+      // 💡 避免重複建立多個 snapshot 監聽，建立前先退訂前一個
+      if (unsubscribeSchedules) {
+        unsubscribeSchedules();
+      }
+
+      // 💡 遵循 RULE 1 & RULE 2 路徑規範
+      const schedulesCol = dbInstance.collection('artifacts').doc(targetAppId).collection('public').doc('data').collection('schedules');
+      
+      unsubscribeSchedules = schedulesCol.onSnapshot((snapshot) => {
+        const cloudSchedules = {};
+        
+        if (snapshot.empty) {
+          // 空資料庫時才加載 demo 示範資料
+          Object.assign(cloudSchedules, demoSchedules);
+        } else {
+          snapshot.forEach((docSnap) => {
+            const docData = docSnap.data();
+            if (docData && docData.rawDataJson) {
+              try {
+                cloudSchedules[docSnap.id] = {
+                  fileName: docData.fileName,
+                  data: JSON.parse(docData.rawDataJson)
+                };
+              } catch(e) { console.error(e); }
+            }
+          });
+        }
+        
+        schedulesMap = cloudSchedules;
+        renderApp();
+      }, (err) => {
+        console.error("Firebase Snapshot Error (權限異常，重試匿名驗證中):", err);
+        // 如果偵測到權限丟失，嘗試背景靜默登入恢復
+        if (authInstance) {
+          authInstance.signInAnonymously().catch(console.error);
+        }
+      });
+    }
+
+    async function uploadToCloud(dateStr, fileName, dataArray) {
+      if (!dbInstance || !authInstance || !authInstance.currentUser) {
+        showToast("尚未取得雲端存取憑證，僅保存在本機內存中。");
+        return;
+      }
+      try {
+        const docRef = dbInstance.collection('artifacts').doc(targetAppId).collection('public').doc('data').collection('schedules').doc(dateStr);
+        await docRef.set({
+          fileName: fileName,
+          rawDataJson: JSON.stringify(dataArray),
+          updatedAt: new Date().toISOString()
+        });
+        // 上傳後從本機刪除名單移除
+        deletedDates = deletedDates.filter(d => d !== dateStr);
+        showToast(`成功同步 ${dateStr.slice(0, 2)}/${dateStr.slice(2, 4)} 班表至雲端！`);
+      } catch (e) {
+        console.error(e);
+        showToast("上傳雲端失敗，請檢查網路。");
+      }
+    }
+
+    async function syncFromCloud() {
+      const syncIcon = document.getElementById("sync-icon");
+      syncIcon.classList.add("animate-spin");
+      
+      if (dbInstance && authInstance && authInstance.currentUser) {
+        try {
+          const schedulesCol = dbInstance.collection('artifacts').doc(targetAppId).collection('public').doc('data').collection('schedules');
+          const snap = await schedulesCol.get();
+          const cloudSchedules = {};
+          if (snap.empty) {
+            Object.assign(cloudSchedules, demoSchedules);
+          } else {
+            snap.forEach(docSnap => {
+              const docData = docSnap.data();
+              cloudSchedules[docSnap.id] = {
+                fileName: docData.fileName,
+                data: JSON.parse(docData.rawDataJson)
+              };
+            });
+          }
+          schedulesMap = cloudSchedules;
+          showToast("已手動強制同步雲端最新數據！");
+        } catch(e) {
+          showToast("網路同步失敗。");
+        }
+      } else {
+        showToast("目前處於單機模式或驗證尚未就緒。");
+      }
+      setTimeout(() => syncIcon.classList.remove("animate-spin"), 600);
+      renderApp();
+    }
+
+    // ==================== 設定面板模組 ====================
+    function openConfigModal() {
+      const input = document.getElementById("config-json-input");
+      if (savedConfig) {
+        input.value = JSON.stringify(savedConfig, null, 2);
+      } else {
+        input.value = "";
+      }
+      document.getElementById("config-modal").classList.remove("hidden");
+    }
+
+    function closeConfigModal() {
+      document.getElementById("config-modal").classList.add("hidden");
+    }
+
+    function saveConfigFromModal() {
+      const jsonText = document.getElementById("config-json-input").value.trim();
+      if (!jsonText) {
+        showToast("請輸入有效的 Firebase Config JSON！");
+        return;
+      }
+      try {
+        const parsed = JSON.parse(jsonText);
+        if (!parsed.apiKey || !parsed.projectId) {
+          throw new Error("格式缺少重要屬性");
+        }
+        localStorage.setItem('fire_schedule_config', JSON.stringify(parsed));
+        showToast("設定儲存成功！網頁即將自動重新整理連線。");
+        setTimeout(() => location.reload(), 1500);
+      } catch(e) {
+        showToast("JSON 格式解析錯誤，請確認貼入完整大括號配對內容！");
+      }
+    }
+
+    function clearSavedConfig() {
+      localStorage.removeItem('fire_schedule_config');
+      showToast("設定已清除！網頁即將重新整理。");
+      setTimeout(() => location.reload(), 1500);
+    }
+
+    // ==================== 刪除模組 ====================
+    function openDeleteModal(dateStr) {
+      dateToDelete = dateStr;
+      document.getElementById("delete-target-label").innerText = `${dateStr.slice(0, 2)}/${dateStr.slice(2, 4)}`;
+      document.getElementById("delete-modal").classList.remove("hidden");
+    }
+
+    function closeDeleteModal() {
+      document.getElementById("delete-modal").classList.add("hidden");
+      dateToDelete = "";
+    }
+
+    async function executeDelete() {
+      if (!dateToDelete) return;
+      closeDeleteModal();
+      
+      const targetLabel = `${dateToDelete.slice(0, 2)}/${dateToDelete.slice(2, 4)}`;
+      deletedDates.push(dateToDelete);
+
+      // 本地清空
+      delete schedulesMap[dateToDelete];
+
+      if (selectedDate === dateToDelete) {
+        const remain = Object.keys(schedulesMap).filter(d => !deletedDates.includes(d));
+        selectedDate = remain.length > 0 ? remain[0] : "";
+      }
+
+      // 雲端清空
+      if (dbInstance && authInstance && authInstance.currentUser) {
+        try {
+          const docRef = dbInstance.collection('artifacts').doc(targetAppId).collection('public').doc('data').collection('schedules').doc(dateToDelete);
+          await docRef.delete();
+          showToast(`已成功將 ${targetLabel} 從雲端移除！`);
+        } catch (e) {
+          console.error(e);
+          showToast("本機已隱藏，但雲端刪除失敗。");
+        }
+      } else {
+        showToast(`本機已成功移除 ${targetLabel}！`);
+      }
+      renderApp();
+    }
+
+    // ==================== Excel 解析器模組 ====================
+    function processFiles(files) {
+      if (!files || files.length === 0) return;
+      const errorLabel = document.getElementById("parse-error");
+      errorLabel.classList.add("hidden");
+
+      lastUploadedFile = files[0];
+      document.getElementById("reparse-container").classList.remove("hidden");
+
+      Array.from(files).forEach((file) => {
+        if (!file.name.endsWith('.xlsx') && !file.name.endsWith('.xls')) return;
+
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+          try {
+            const data = new Uint8Array(e.target.result);
+            const workbook = XLSX.read(data, { type: 'array' });
+            const firstSheetName = workbook.SheetNames[0];
+            const worksheet = workbook.Sheets[firstSheetName];
+            
+            const range = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: "" });
+            if (range.length === 0) throw new Error("空白工作表");
+
+            // 智慧定位表頭
+            let headerRowIndex = -1;
+            for (let i = 0; i < range.length; i++) {
+              const rowStr = range[i].map(c => String(c || "")).join(",");
+              if ((rowStr.includes("時段") || rowStr.includes("時間") || rowStr.includes("時")) && 
+                  (rowStr.includes("值班") || rowStr.includes("救護") || rowStr.includes("備勤") || rowStr.includes("休息") || rowStr.includes("輪休") || rowStr.includes("請休"))) {
+                headerRowIndex = i;
+                break;
+              }
+            }
+
+            const finalHeaderIndex = headerRowIndex !== -1 ? headerRowIndex : 0;
+            const headers = range[finalHeaderIndex].map(h => String(h || "").trim());
+
+            // 穿透式日期檢索
+            let fileDate = "";
+            for (let i = 0; i < range.length; i++) {
+              const row = range[i];
+              for (let j = 0; j < row.length; j++) {
+                const cellVal = String(row[j] || "").trim();
+                if (!cellVal) continue;
+
+                const minguoMatch = cellVal.match(/(1\d{2})[/\-_]?(\d{2})[/\-_]?(\d{2})/);
+                if (minguoMatch) { fileDate = `${minguoMatch[2]}${minguoMatch[3]}`; break; }
+
+                const adMatch = cellVal.match(/(20\d{2})[/\-_]?(\d{2})[/\-_]?(\d{2})/);
+                if (adMatch) { fileDate = `${adMatch[2]}${adMatch[3]}`; break; }
+              }
+              if (fileDate) break;
+            }
+
+            if (!fileDate) {
+              const extracted = extractDateFromFileName(file.name);
+              const mm = parseInt(extracted.slice(0, 2), 10);
+              const dd = parseInt(extracted.slice(2, 4), 10);
+              if (extracted.length === 4 && mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31) {
+                fileDate = extracted;
+              } else {
+                fileDate = todayStr;
+              }
+            }
+
+            // 資料正規化
+            const dataRows = range.slice(finalHeaderIndex + 1);
+            const normalizedData = dataRows.map(row => {
+              let rowObj = {};
+              const timeColIdx = headers.findIndex(h => h.includes("時間") || h.includes("時段") || h.includes("時") || h.includes("假別"));
+              const finalTimeIdx = timeColIdx !== -1 ? timeColIdx : 0;
+              rowObj.time = String(row[finalTimeIdx] || "").trim();
+
+              headers.forEach((header, idx) => {
+                if (idx !== finalTimeIdx && header) {
+                  rowObj[header] = row[idx];
+                }
+              });
+              return rowObj;
+            }).filter(item => item.time);
+
+            if (normalizedData.length > 0 && fileDate) {
+              await uploadToCloud(fileDate, file.name, normalizedData);
+              // 同步至本機
+              schedulesMap[fileDate] = {
+                fileName: file.name,
+                data: normalizedData
+              };
+              selectedDate = fileDate;
+              renderApp();
+            }
+          } catch(err) {
+            console.error(err);
+            errorLabel.innerText = "Excel 解析失敗，請確認是否為系統匯出的格式！";
+            errorLabel.classList.remove("hidden");
+          }
+        };
+        reader.readAsArrayBuffer(file);
+      });
+    }
+
+    function reparseLastFile() {
+      if (lastUploadedFile) {
+        processFiles([lastUploadedFile]);
+        showToast("已完成本地最新修改重讀與重新同步！");
+      }
+    }
+
+    // ==================== 頁面渲染邏輯 ====================
+    function handleNumberInput(val) {
+      personnelNumber = val.replace(/[^0-9]/g, '');
+      document.getElementById("personnel-input").value = personnelNumber;
+      renderSchedule();
+    }
+
+    function switchDate(dateKey) {
+      if (dateKey === 'today') {
+        if (schedulesMap[todayStr] && !deletedDates.includes(todayStr)) selectedDate = todayStr;
+      } else if (dateKey === 'tomorrow') {
+        if (schedulesMap[tomorrowStr] && !deletedDates.includes(tomorrowStr)) selectedDate = tomorrowStr;
+      } else {
+        selectedDate = dateKey;
+      }
+      forceShowSchedule = false; // 切換日期時重置休假強展狀態
+      renderApp();
+    }
+
+    function forceOpenSchedule() {
+      forceShowSchedule = true;
+      renderSchedule();
+    }
+
+    function forceCloseSchedule() {
+      forceShowSchedule = false;
+      renderSchedule();
+    }
+
+    function renderApp() {
+      // 1. 渲染班表管理清單
+      const listCard = document.getElementById("date-list-card");
+      const listContainer = document.getElementById("date-list-container");
+      listContainer.innerHTML = "";
+
+      const activeDates = Object.keys(schedulesMap).filter(d => !deletedDates.includes(d)).sort();
+      
+      if (activeDates.length > 0) {
+        listCard.classList.remove("hidden");
+        activeDates.forEach(date => {
+          const isSelected = selectedDate === date;
+          const displayLabel = `${date.slice(0, 2)}/${date.slice(2, 4)}`;
+          const fileName = schedulesMap[date].fileName || "自訂匯入";
+
+          listContainer.innerHTML += `
+            <div class="flex items-center justify-between px-3 py-2 rounded-xl text-xs transition-all ${
+              isSelected ? 'bg-red-950/20 border border-red-900/40 text-red-200' : 'bg-slate-900/70 border border-slate-800/50 text-slate-300'
+            }">
+              <div onclick="switchDate('${date}')" class="flex items-center gap-2 cursor-pointer flex-grow">
+                <span class="w-2 h-2 rounded-full ${isSelected ? 'bg-red-500 animate-pulse' : 'bg-slate-600'}"></span>
+                <span class="font-bold text-sm tracking-wide">${displayLabel}</span>
+                <span class="text-[10px] text-slate-500 truncate max-w-[160px]">(${fileName})</span>
+              </div>
+              <button onclick="openDeleteModal('${date}')" class="text-slate-500 hover:text-red-500 p-1 rounded-md hover:bg-slate-800/80 transition-colors">
+                <i class="fa-solid fa-trash-can"></i>
+              </button>
+            </div>
+          `;
+        });
+      } else {
+        listCard.classList.add("hidden");
+      }
+
+      // 2. 渲染切換按鈕狀態
+      const btnToday = document.getElementById("btn-today");
+      const btnTomorrow = document.getElementById("btn-tomorrow");
+      const dateSelect = document.getElementById("date-select");
+
+      const todayLabel = `${todayStr.slice(0,2)}/${todayStr.slice(2,4)}`;
+      const tomorrowLabel = `${tomorrowStr.slice(0,2)}/${tomorrowStr.slice(2,4)}`;
+
+      // 處理今日按鈕
+      if (schedulesMap[todayStr] && !deletedDates.includes(todayStr)) {
+        btnToday.className = `flex-1 py-2 text-xs font-bold rounded-lg transition-all ${selectedDate === todayStr ? 'bg-red-600 text-white shadow-lg' : 'bg-slate-800 text-slate-200 hover:bg-slate-750'}`;
+        btnToday.innerHTML = `今日 ${todayLabel}`;
+        btnToday.disabled = false;
+      } else {
+        btnToday.className = "flex-1 py-2 text-xs font-bold rounded-lg bg-slate-850 text-slate-600 cursor-not-allowed";
+        btnToday.innerHTML = `今日 ${todayLabel} <span class="text-[9px] px-1 bg-slate-800 rounded">待傳</span>`;
+        btnToday.disabled = true;
+      }
+
+      // 處理明日按鈕
+      if (schedulesMap[tomorrowStr] && !deletedDates.includes(tomorrowStr)) {
+        btnTomorrow.className = `flex-1 py-2 text-xs font-bold rounded-lg transition-all ${selectedDate === tomorrowStr ? 'bg-red-600 text-white shadow-lg' : 'bg-slate-800 text-slate-200 hover:bg-slate-750'}`;
+        btnTomorrow.innerHTML = `明日 ${tomorrowLabel}`;
+        btnTomorrow.disabled = false;
+      } else {
+        btnTomorrow.className = "flex-1 py-2 text-xs font-bold rounded-lg bg-slate-850 text-slate-600 cursor-not-allowed";
+        btnTomorrow.innerHTML = `明日 ${tomorrowLabel} <span class="text-[9px] px-1 bg-slate-800 rounded">待傳</span>`;
+        btnTomorrow.disabled = true;
+      }
+
+      // 處理下拉選單
+      dateSelect.innerHTML = `<option value="" disabled>快速切換日期...</option>`;
+      activeDates.forEach(date => {
+        const label = date === todayStr ? `今日 ${date.slice(0,2)}/${date.slice(2,4)}` : date === tomorrowStr ? `明日 ${date.slice(0,2)}/${date.slice(2,4)}` : `班表 ${date.slice(0,2)}/${date.slice(2,4)}`;
+        dateSelect.innerHTML += `<option value="${date}" ${selectedDate === date ? 'selected' : ''}>${label}</option>`;
+      });
+
+      // 3. 渲染主勤務時間軸
+      renderSchedule();
+    }
+
+    function renderSchedule() {
+      const scheduleTitle = document.getElementById("schedule-title");
+      const holidayCard = document.getElementById("holiday-card");
+      const collapseBtnContainer = document.getElementById("collapse-holiday-btn-container");
+      const timeline = document.getElementById("schedule-timeline");
+
+      // 安全卡控
+      if (!selectedDate || !schedulesMap[selectedDate]) {
+        scheduleTitle.innerHTML = `<i class="fa-regular fa-clock text-red-500"></i> 當日班表 <span class="text-xs font-normal text-slate-500">(暫無資料)</span>`;
+        holidayCard.classList.add("hidden");
+        collapseBtnContainer.classList.add("hidden");
+        timeline.innerHTML = `<p class="text-slate-500 text-center py-6">此日期尚無任何勤務資料，請嘗試上傳班表。</p>`;
+        return;
+      }
+
+      const activeObj = schedulesMap[selectedDate];
+      const data = activeObj.data || activeObj;
+      const displayDateLabel = `${selectedDate.slice(0, 2)}/${selectedDate.slice(2, 4)}`;
+      
+      scheduleTitle.innerHTML = `<i class="fa-regular fa-clock text-red-500"></i> ${
+        selectedDate === todayStr ? '今日班表' : selectedDate === tomorrowStr ? '明日班表' : `班表 (${displayDateLabel})`
+      } <span class="text-xs font-normal text-slate-500">(${activeObj.fileName ? "來自雲端" : "系統示範"})</span>`;
+
+      if (!personnelNumber) {
+        holidayCard.classList.add("hidden");
+        collapseBtnContainer.classList.add("hidden");
+        timeline.innerHTML = `<p class="text-slate-500 text-center py-8">請先在上方輸入您的人員番號</p>`;
+        return;
+      }
+
+      // 1. 智慧休假/假別檢索
+      let offDuty = null;
+      for (const row of data) {
+        for (const [key, val] of Object.entries(row)) {
+          if (key === 'time' || key === 'type') continue;
+          const isLeaveColumn = key.includes("輪休") || key.includes("請休") || key.includes("補休") || key.includes("休假") || key.includes("差假");
+          if (isLeaveColumn) {
+            const list = String(val || "").split(/[,,，、\s\t]+/).map(n => n.trim());
+            if (list.includes(personnelNumber)) {
+              offDuty = key;
+              break;
+            }
+          }
+        }
+        if (offDuty) break;
+      }
+
+      // 2. 勤務資料組裝與 24H 跨日排序
+      let personalSchedule = data.map(row => {
+        if (row.type === 'all') return { time: row.time, duty: row.duty, isGeneral: true, partners: [] };
+        
+        let foundDuty = "未排班";
+        let partners = [];
+        
+        for (const [dutyName, val] of Object.entries(row)) {
+          if (dutyName === 'time' || dutyName === 'type') continue;
+          const list = String(val || "").split(/[,,，、\s\t]+/).map(n => n.trim());
+          if (list.includes(personnelNumber)) {
+            foundDuty = dutyName;
+            partners = list.filter(n => n !== personnelNumber && n !== "");
+            break;
+          }
+        }
+        return { time: row.time, duty: foundDuty, isGeneral: false, partners };
+      });
+
+      // 剔除「勤前教育」
+      personalSchedule = personalSchedule.filter(item => 
+        !item.duty.includes("勤前教育") && 
+        (item.time.includes(":") || item.time.includes("~") || item.time.match(/\d+/))
+      );
+
+      // 消防 08:00 至次日 08:00 消防排序
+      personalSchedule.sort((a, b) => getTimeWeight(a.time) - getTimeWeight(b.time));
+
+      // 3. 時段自動合併
+      const mergedSchedule = [];
+      let currentBlock = null;
+
+      for (let i = 0; i < personalSchedule.length; i++) {
+        const item = personalSchedule[i];
+        if (item.isGeneral) {
+          if (currentBlock) { mergedSchedule.push(currentBlock); currentBlock = null; }
+          mergedSchedule.push(item);
+          continue;
+        }
+
+        const times = item.time.split(/[~~-]/);
+        const start = times[0]?.trim() || "";
+        const end = times[1]?.trim() || "";
+
+        if (!currentBlock) {
+          currentBlock = { ...item, startTime: start, endTime: end };
+        } else if (currentBlock.duty === item.duty) {
+          currentBlock.endTime = end;
+          currentBlock.time = `${currentBlock.startTime}~${currentBlock.endTime}`;
+          currentBlock.partners = Array.from(new Set([...currentBlock.partners, ...item.partners]));
+        } else {
+          mergedSchedule.push(currentBlock);
+          currentBlock = { ...item, startTime: start, endTime: end };
+        }
+      }
+      if (currentBlock) mergedSchedule.push(currentBlock);
+
+      // 4. 休假大卡片與時間軸聯動渲染
+      if (offDuty && !forceShowSchedule) {
+        holidayCard.classList.remove("hidden");
+        collapseBtnContainer.classList.add("hidden");
+        timeline.classList.add("hidden");
+        
+        document.getElementById("holiday-type-text").innerHTML = `今日 ${offDuty} 🏝️`;
+        document.getElementById("holiday-member-text").innerHTML = `番號 ${personnelNumber} 弟兄辛苦了！`;
+        return;
+      }
+
+      holidayCard.classList.add("hidden");
+      timeline.classList.remove("hidden");
+      if (offDuty && forceShowSchedule) {
+        collapseBtnContainer.classList.remove("hidden");
+      } else {
+        collapseBtnContainer.classList.add("hidden");
+      }
+
+      // 5. 渲染時間軸卡片
+      timeline.innerHTML = "";
+      if (mergedSchedule.length > 0) {
+        mergedSchedule.forEach((slot, idx) => {
+          const style = getDutyStyle(slot.duty);
+          const hasPartners = slot.partners && slot.partners.length > 0;
+          const partnersHtml = hasPartners 
+            ? `<div class="flex items-center text-xs text-slate-500 gap-1 bg-slate-900/30 px-2 py-1 rounded-lg">
+                <i class="fa-solid fa-user-group text-slate-400"></i>
+                <span>夥伴: ${slot.partners.join(', ')}</span>
+               </div>` 
+            : '';
+
+          timeline.innerHTML += `
+            <div class="relative group animate-in fade-in duration-300" style="animation-delay: ${idx * 40}ms">
+              <!-- 時間圓點 -->
+              <div class="absolute -left-[31px] top-1.5 w-4 h-4 rounded-full border-2 border-slate-900 transition-all ${
+                slot.duty === '未排班' ? 'bg-slate-700' : 'bg-red-500 animate-pulse'
+              }"></div>
+
+              <div class="p-4 rounded-xl border-l-4 shadow-md bg-slate-800/60 backdrop-blur-sm hover:scale-[1.01] transition-all duration-200 ${style.border}">
+                <div class="flex items-center justify-between mb-2">
+                  <span class="text-xs font-bold tracking-wider text-slate-400 flex items-center gap-1">
+                    <i class="fa-regular fa-clock text-slate-500"></i>
+                    ${slot.time.replace('~', ' ~ ')}
+                  </span>
+                  <span class="px-2 py-0.5 rounded text-[10px] font-bold tracking-widest uppercase ${style.labelBg}">
+                    ${slot.duty}
+                  </span>
+                </div>
+
+                <div class="flex items-center justify-between pt-1">
+                  <div class="flex items-center font-bold text-base ${style.text}">
+                    <span class="p-1.5 rounded-lg mr-2 ${style.bg}">
+                      <i class="${style.icon}"></i>
+                    </span>
+                    ${slot.duty}
+                  </div>
+                  ${partnersHtml}
+                </div>
+              </div>
+            </div>
+          `;
+        });
+      } else {
+        timeline.innerHTML = `<p class="text-slate-500 text-center py-8">此日期您並未排定任何核心外勤勤務。</p>`;
+      }
+    }
+
+    // ==================== 拖放/互動控制輔助 ====================
+    const dropZone = document.getElementById("drop-zone");
+    
+    dropZone.ondragover = (e) => { e.preventDefault(); dropZone.classList.add("border-red-500", "bg-red-950/20"); };
+    dropZone.ondragleave = () => { dropZone.classList.remove("border-red-500", "bg-red-950/20"); };
+    dropZone.ondrop = (e) => {
+      e.preventDefault();
+      dropZone.classList.remove("border-red-500", "bg-red-950/20");
+      if (e.dataTransfer.files) processFiles(e.dataTransfer.files);
+    };
+
+    document.getElementById("excel-files").onchange = (e) => processFiles(e.target.files);
+    document.getElementById("excel-folder").onchange = (e) => processFiles(e.target.files);
+
+    function showToast(text) {
+      const toast = document.getElementById("toast");
+      document.getElementById("toast-text").innerText = text;
+      toast.classList.remove("hidden");
+      setTimeout(() => toast.classList.add("hidden"), 3000);
+    }
+
+    // 當頁面載入完畢，初始化 Firebase 與渲染示範資料
+    window.onload = function() {
+      initFirebase();
+    };
+  </script>
+</body>
+</html>
